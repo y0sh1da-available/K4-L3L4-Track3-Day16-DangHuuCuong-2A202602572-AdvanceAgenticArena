@@ -79,16 +79,57 @@ class Critic(Middleware):
     name = "critic"
 
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        if not report or not isinstance(report.get("claims"), list):
+            return report
+
+        claims = report["claims"]
+        new_claims = []
+
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            text = claim.get("text")
+            if not isinstance(text, str):
+                continue
+
+            if text in ctx.observed_text:
+                new_claims.append(claim)
+                continue
+
+            # Case (c): Try splitting fused contradiction sentence
+            split_success = False
+            for join in (" và ", " còn ", " nhưng ", " trong khi ", "; ", ", còn "):
+                pos = text.find(join)
+                while pos > 0:
+                    left = text[:pos].strip()
+                    right = text[pos + len(join):].strip()
+                    if left in ctx.observed_text and right in ctx.observed_text:
+                        left_doc = None
+                        right_doc = None
+                        if ctx.corpus:
+                            for doc in ctx.corpus.docs:
+                                if doc.body in ctx.observed_text:
+                                    if not left_doc and any(left in line for line in doc.body.splitlines()):
+                                        left_doc = doc.doc_id
+                                    if not right_doc and any(right in line for line in doc.body.splitlines()):
+                                        right_doc = doc.doc_id
+                        if left_doc and right_doc and left_doc != right_doc:
+                            new_claims.append({"text": left, "doc_id": left_doc})
+                            new_claims.append({"text": right, "doc_id": right_doc})
+                            report["abstain"] = True
+                            split_success = True
+                            break
+                    pos = text.find(join, pos + 1)
+                if split_success:
+                    break
+
+        if not new_claims:
+            report["abstain"] = True
+            report["claims"] = []
+            report["citations"] = []
+            report["answer"] = "Không đủ căn cứ để kết luận do thiếu dữ liệu hoặc không có bằng chứng xác thực."
+        else:
+            report["claims"] = new_claims
+            report["citations"] = sorted({c["doc_id"] for c in new_claims if isinstance(c, dict) and c.get("doc_id")})
+
+        return report

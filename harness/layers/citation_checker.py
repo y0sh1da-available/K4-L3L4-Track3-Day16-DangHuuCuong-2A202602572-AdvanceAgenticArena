@@ -68,16 +68,26 @@ class CitationChecker(Middleware):
     name = "citation_checker"
 
     def after_agent(self, ctx, report):
-        # TODO (§11): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; bỏ qua nếu rỗng hoặc ctx.corpus là None.
-        #  2. Với mỗi claim, gọi ctx.corpus.get(claim["doc_id"]).
-        #     Nếu tài liệu tồn tại VÀ claim["text"] khớp NGUYÊN VĂN một
-        #     DÒNG trong body của nó (không phải chỉ "nằm trong body")
-        #     -> trích dẫn đã đúng, giữ nguyên claim.
-        #  3. Nếu không: tìm trong ctx.corpus.docs tài liệu đầu tiên thoả
-        #     doc.body in ctx.observed_text  và  claim["text"] khớp
-        #     nguyên văn một DÒNG của doc.body -> đó là nguồn thật.
-        #     Đổi doc_id sang nó, GIỮ NGUYÊN text.
-        #  4. Không tìm được nguồn nào -> để `critic` xử lý, đừng bịa doc_id.
-        #  5. Cập nhật report["citations"] = danh sách doc_id đã sắp xếp.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        if not report or not isinstance(report.get("claims"), list) or not ctx.corpus:
+            return report
+
+        claims = report["claims"]
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            text = claim.get("text")
+            doc_id = claim.get("doc_id")
+            if not isinstance(text, str):
+                continue
+
+            current_doc = ctx.corpus.get(doc_id) if doc_id else None
+            if current_doc and any(text in line for line in current_doc.body.splitlines()):
+                continue
+
+            for doc in ctx.corpus.docs:
+                if doc.body in ctx.observed_text and any(text in line for line in doc.body.splitlines()):
+                    claim["doc_id"] = doc.doc_id
+                    break
+
+        report["citations"] = sorted({c["doc_id"] for c in claims if isinstance(c, dict) and c.get("doc_id")})
+        return report
